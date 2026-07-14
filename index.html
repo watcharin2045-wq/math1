@@ -677,6 +677,7 @@ let camStream=null, camActive=false;
 let camBaselinePix=null; // Float32Array SAMPLE_W*SAMPLE_H
 let camSmoothCentroid=0.5;
 let camLowSignalAccum=0, camLowSignalWarned=false;
+let camNoiseFloor=0;
 const SAMPLE_W=48, SAMPLE_H=36;
 const ROW_START=Math.floor(SAMPLE_H*0.12), ROW_END=Math.floor(SAMPLE_H*0.90);
 const sampleCanvas = document.createElement('canvas');
@@ -737,9 +738,26 @@ async function calibrateCamera(){
   camSmoothCentroid = 0.5;
   camLowSignalAccum = 0;
   camLowSignalWarned = false;
+
+  // measure the camera/lighting's natural frame-to-frame noise while the person held still,
+  // so the motion threshold can adapt to this specific camera/room instead of a fixed guess
+  const noiseSamples = [];
+  for(let f=1; f<N; f++){
+    let s = 0;
+    for(let y=ROW_START;y<ROW_END;y++){
+      for(let x=0;x<SAMPLE_W;x++){
+        const i = y*SAMPLE_W+x;
+        s += Math.abs(frames[f][i]-frames[f-1][i]);
+      }
+    }
+    noiseSamples.push(s);
+  }
+  noiseSamples.sort((a,b)=>a-b);
+  camNoiseFloor = noiseSamples[Math.floor(noiseSamples.length/2)] || 0;
 }
 
 const PIXEL_EPS = 16;
+const camDiffScratch = new Float32Array(SAMPLE_W*SAMPLE_H);
 function processCameraFrame(){
   if(!camActive || !camBaselinePix) return;
   const cur = grayscaleOf(grabPixels());
@@ -749,18 +767,30 @@ function processCameraFrame(){
     for(let x=0;x<SAMPLE_W;x++){
       const i = y*SAMPLE_W+x;
       const d = cur[i]-camBaselinePix[i];
+      camDiffScratch[i] = d;
       const ad = Math.abs(d);
       if(ad>PIXEL_EPS){ cols[x]+=ad; diffSum+=ad; }
-      else if(ad<PIXEL_EPS*0.4){ camBaselinePix[i] += d*0.01; } // slow drift adaptation when stable
     }
   }
-  let norm = 0.5;
+
   const rowCount = ROW_END-ROW_START;
-  const motionThresh = camPreset.motionMin * SAMPLE_W * (rowCount/SAMPLE_H) * 1.2;
-  if(diffSum > motionThresh){
-    let weighted=0;
-    for(let x=0;x<SAMPLE_W;x++) weighted += cols[x]*x;
-    norm = (weighted/diffSum)/(SAMPLE_W-1);
+  const motionThresh = Math.max(
+    camPreset.motionMin * SAMPLE_W * (rowCount/SAMPLE_H) * 0.7,
+    camNoiseFloor * 3
+  );
+  const recenterThresh = motionThresh * 0.4;
+
+  // Only nudge the baseline toward the current frame when the WHOLE frame confidently
+  // looks like "no real deviation" (diffSum very low). Doing this unconditionally per-pixel
+  // (the old bug) slowly absorbed a *sustained* lean into the baseline after a second or two,
+  // making it feel like leaning "stopped working" the longer you held a lane.
+  if(diffSum < recenterThresh){
+    for(let y=ROW_START;y<ROW_END;y++){
+      for(let x=0;x<SAMPLE_W;x++){
+        const i = y*SAMPLE_W+x;
+        camBaselinePix[i] += camDiffScratch[i]*0.01;
+      }
+    }
   }
 
   if(diffSum < motionThresh*0.35){ camLowSignalAccum += 0.07; }
@@ -774,8 +804,17 @@ function processCameraFrame(){
     });
   }
 
-  const mirrored = 1-norm; // preview is CSS-mirrored to feel natural
-  camSmoothCentroid += (mirrored-camSmoothCentroid)*camPreset.smooth;
+  // three-zone update: confidently deviated -> track it / confidently at rest -> recenter /
+  // ambiguous middle band -> hold the last reading (prevents jitter fighting a sustained lean)
+  if(diffSum > motionThresh){
+    let weighted=0;
+    for(let x=0;x<SAMPLE_W;x++) weighted += cols[x]*x;
+    const norm = (weighted/diffSum)/(SAMPLE_W-1);
+    const mirrored = 1-norm; // preview is CSS-mirrored to feel natural
+    camSmoothCentroid += (mirrored-camSmoothCentroid)*camPreset.smooth;
+  } else if(diffSum < recenterThresh){
+    camSmoothCentroid += (0.5-camSmoothCentroid)*camPreset.smooth;
+  }
 
   const pct = Math.max(0,Math.min(1,camSmoothCentroid))*100;
   zoneDot.style.left = 'calc('+pct+'% - 10px)';
