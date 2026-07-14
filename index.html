@@ -676,6 +676,7 @@ function togglePause(){
 let camStream=null, camActive=false;
 let camBaselinePix=null; // Float32Array SAMPLE_W*SAMPLE_H
 let camSmoothCentroid=0.5;
+let camLowSignalAccum=0, camLowSignalWarned=false;
 const SAMPLE_W=48, SAMPLE_H=36;
 const ROW_START=Math.floor(SAMPLE_H*0.12), ROW_END=Math.floor(SAMPLE_H*0.90);
 const sampleCanvas = document.createElement('canvas');
@@ -722,12 +723,20 @@ function grayscaleOf(data){
 }
 
 async function calibrateCamera(){
+  const N = 16;
   const frames = [];
-  for(let i=0;i<12;i++){ frames.push(grayscaleOf(grabPixels())); await new Promise(r=>setTimeout(r,35)); }
+  for(let i=0;i<N;i++){ frames.push(grayscaleOf(grabPixels())); await new Promise(r=>setTimeout(r,35)); }
   const base = new Float32Array(SAMPLE_W*SAMPLE_H);
-  for(const f of frames){ for(let i=0;i<base.length;i++) base[i]+=f[i]/frames.length; }
+  const tmp = new Float32Array(N);
+  for(let i=0;i<base.length;i++){
+    for(let f=0; f<N; f++) tmp[f] = frames[f][i];
+    tmp.sort();
+    base[i] = tmp[Math.floor(N/2)]; // median across frames: ignores one-off stray movement/flicker
+  }
   camBaselinePix = base;
   camSmoothCentroid = 0.5;
+  camLowSignalAccum = 0;
+  camLowSignalWarned = false;
 }
 
 const PIXEL_EPS = 16;
@@ -753,6 +762,18 @@ function processCameraFrame(){
     for(let x=0;x<SAMPLE_W;x++) weighted += cols[x]*x;
     norm = (weighted/diffSum)/(SAMPLE_W-1);
   }
+
+  if(diffSum < motionThresh*0.35){ camLowSignalAccum += 0.07; }
+  else { camLowSignalAccum = 0; camLowSignalWarned = false; }
+  if(camLowSignalAccum > 5 && !camLowSignalWarned){
+    camLowSignalWarned = true;
+    Swal.fire({
+      toast:true, position:'top', timer:3200, showConfirmButton:false, icon:'info',
+      title:'จับตัวคุณได้น้อย ลองเปิดไฟให้สว่างขึ้น/ขยับเข้าใกล้กล้อง แล้วกด ⏸️ เพื่อปรับเทียบกล้องใหม่',
+      background:'#FFF8E7', color:'#26263A',
+    });
+  }
+
   const mirrored = 1-norm; // preview is CSS-mirrored to feel natural
   camSmoothCentroid += (mirrored-camSmoothCentroid)*camPreset.smooth;
 
@@ -1115,15 +1136,43 @@ function triggerGameOver(){
   }, 500);
 }
 
+function recalibrateFlow(){
+  return Swal.fire({
+    title:'🧍 ปรับเทียบตำแหน่งกล้องใหม่',
+    html:`<div class="text-slate-600 text-sm">นั่ง/ยืนกึ่งกลางกล้อง อยู่นิ่งๆ ไม่มีใครเดินผ่านด้านหลัง แล้วกด "พร้อมแล้ว"</div>`,
+    confirmButtonText:'✅ พร้อมแล้ว', confirmButtonColor:'#2ECC71', allowOutsideClick:false,
+  }).then(()=>{
+    Swal.fire({ title:'⏳ กำลังปรับเทียบ...', allowOutsideClick:false, didOpen:()=>Swal.showLoading() });
+    return calibrateCamera().then(()=>{ Swal.close(); });
+  });
+}
+
+let recalRequested = false;
 function showPauseMenu(){
+  recalRequested = false;
+  const cameraExtra = state.controlMode==='camera'
+    ? `<button id="recalBtn" type="button" style="background:#8b5cf6;color:#fff;border:none;border-radius:12px;padding:8px 18px;font-family:'Prompt',sans-serif;font-size:13px;cursor:pointer;margin-top:10px;">🎯 ปรับเทียบกล้องใหม่</button>`
+    : '';
   Swal.fire({
     title:'⏸️ หยุดเกมชั่วคราว',
-    html:`<div class="text-slate-500">คะแนนปัจจุบัน: <b>${state.score}</b></div>`,
+    html:`<div class="text-slate-500">คะแนนปัจจุบัน: <b>${state.score}</b></div>${cameraExtra}`,
     showCancelButton:true, showDenyButton:true,
     confirmButtonText:'▶️ เล่นต่อ', denyButtonText:'🔁 เริ่มใหม่', cancelButtonText:'🏠 เมนูหลัก',
     confirmButtonColor:'#2ECC71', denyButtonColor:'#f59e0b', cancelButtonColor:'#94a3b8',
     allowOutsideClick:false, allowEscapeKey:false,
+    didOpen:()=>{
+      const b = document.getElementById('recalBtn');
+      if(b){
+        b.addEventListener('click', async ()=>{
+          recalRequested = true;
+          Swal.close();
+          await recalibrateFlow();
+          state.paused=false; startMusicLoop();
+        });
+      }
+    },
   }).then((res)=>{
+    if(recalRequested) return;
     if(res.isConfirmed){ state.paused=false; startMusicLoop(); }
     else if(res.isDenied){ resetState(); }
     else { state.running=false; showStartMenu(); }
