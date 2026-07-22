@@ -156,12 +156,12 @@
   </div>
 
   <!-- ================= CAMERA MINI PREVIEW ================= -->
-  <div id="camWidget" class="hidden absolute top-1/2 -translate-y-1/2 right-2 sm:right-4 z-30 flex-col items-center gap-1 pointer-events-none">
-    <div class="w-16 h-16 sm:w-20 sm:h-20 rounded-full border-4 border-white shadow-xl overflow-hidden bg-black">
+  <div id="camWidget" class="hidden absolute top-1/2 -translate-y-1/2 right-2 sm:right-4 z-30 flex-col items-center gap-1.5 pointer-events-none">
+    <div class="w-28 h-28 sm:w-40 sm:h-40 rounded-full border-4 border-white shadow-xl overflow-hidden bg-black">
       <canvas id="camPreview" class="w-full h-full object-cover"></canvas>
     </div>
-    <div class="relative w-20 sm:w-24 h-3 bg-white/70 rounded-full border border-white shadow">
-      <div id="zoneDot" class="absolute -top-1 w-5 h-5 rounded-full bg-red-500 border-2 border-white shadow" style="left:calc(50% - 10px); transition:left .12s ease;"></div>
+    <div class="relative w-32 sm:w-40 h-4 bg-white/70 rounded-full border border-white shadow">
+      <div id="zoneDot" class="absolute -top-1.5 w-6 h-6 rounded-full bg-red-500 border-2 border-white shadow" style="left:calc(50% - 12px); transition:left .12s ease;"></div>
     </div>
   </div>
 
@@ -685,11 +685,9 @@ sampleCanvas.width=SAMPLE_W; sampleCanvas.height=SAMPLE_H;
 const sampleCtx = sampleCanvas.getContext('2d', {willReadFrequently:true});
 
 const CAM_PRESETS = {
-  low:    { deadzone:0.16, motionMin:5.5, smooth:0.28 },
-  medium: { deadzone:0.11, motionMin:4.0, smooth:0.38 },
-  high:   { deadzone:0.06, motionMin:2.8, smooth:0.5  },
+  high: { deadzone:0.06, motionMin:2.8, smooth:0.5 },
 };
-let camPreset = CAM_PRESETS.medium;
+let camPreset = CAM_PRESETS.high;
 
 async function startCamera(){
   try{
@@ -817,7 +815,7 @@ function processCameraFrame(){
   }
 
   const pct = Math.max(0,Math.min(1,camSmoothCentroid))*100;
-  zoneDot.style.left = 'calc('+pct+'% - 10px)';
+  zoneDot.style.left = 'calc('+pct+'% - 12px)';
 
   const now = performance.now();
   if(now-state.lastLaneChange > 220){
@@ -863,26 +861,54 @@ function drawBox(box){
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.translate(x,y);
-  ctx.rotate(Math.sin(box.wobble)*0.06);
-  const w = 74*scale, h = 54*scale;
+  ctx.rotate(Math.sin(box.wobble)*0.055);
+  const w = 98*scale, h = 74*scale;
+  const r = 18*scale;
 
-  ctx.fillStyle = 'rgba(0,0,0,0.2)';
-  roundRect(ctx, -w/2+3, -h/2+5, w, h, 12*scale);
+  // drop shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.28)';
+  roundRect(ctx, -w/2+4, -h/2+7, w, h, r);
   ctx.fill();
 
-  const grad = ctx.createLinearGradient(0,-h/2,0,h/2);
-  grad.addColorStop(0,'#ffffff'); grad.addColorStop(1,'#dbe4f5');
-  ctx.fillStyle = grad;
-  roundRect(ctx, -w/2,-h/2,w,h,12*scale);
+  // outer glossy border (slightly bigger rounded rect behind the face)
+  const borderGrad = ctx.createLinearGradient(0,-h/2,0,h/2);
+  borderGrad.addColorStop(0,'#ffe27a');
+  borderGrad.addColorStop(1,'#e0a319');
+  ctx.fillStyle = borderGrad;
+  roundRect(ctx, -w/2,-h/2,w,h,r);
   ctx.fill();
-  ctx.lineWidth = 3.5*scale;
-  ctx.strokeStyle = '#274c77';
-  ctx.stroke();
 
-  ctx.fillStyle = '#1d3557';
-  ctx.font = 'bold '+Math.round(h*0.5)+'px Kanit, sans-serif';
+  // inner face
+  const pad = 6*scale;
+  const iw = w-pad*2, ih = h-pad*2, ir = r*0.72;
+  const faceGrad = ctx.createLinearGradient(0,-ih/2,0,ih/2);
+  faceGrad.addColorStop(0,'#5bc2ff');
+  faceGrad.addColorStop(0.55,'#2f8ef0');
+  faceGrad.addColorStop(1,'#1a5bc4');
+  ctx.fillStyle = faceGrad;
+  roundRect(ctx, -iw/2,-ih/2,iw,ih,ir);
+  ctx.fill();
+
+  // glossy top highlight
+  ctx.save();
+  roundRect(ctx, -iw/2,-ih/2,iw,ih,ir);
+  ctx.clip();
+  const shineGrad = ctx.createLinearGradient(0,-ih/2,0,-ih*0.05);
+  shineGrad.addColorStop(0,'rgba(255,255,255,0.55)');
+  shineGrad.addColorStop(1,'rgba(255,255,255,0)');
+  ctx.fillStyle = shineGrad;
+  ctx.fillRect(-iw/2,-ih/2,iw,ih*0.55);
+  ctx.restore();
+
+  // number: bold white with dark outline for max readability + toy-like pop
+  ctx.font = 'bold '+Math.round(h*0.56)+'px Kanit, sans-serif';
   ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillText(String(box.value), 0, 2*scale);
+  ctx.lineJoin='round';
+  ctx.lineWidth = Math.max(2, 5*scale);
+  ctx.strokeStyle = '#0b3d7a';
+  ctx.strokeText(String(box.value), 0, 3*scale);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(String(box.value), 0, 3*scale);
   ctx.restore();
 }
 
@@ -1260,15 +1286,7 @@ async function chooseControlMode(){
     confirmButtonColor:'#B24BF3', denyButtonColor:'#4EC5F1', allowOutsideClick:false,
   });
   if(res.isConfirmed){
-    const sens = await Swal.fire({
-      title:'🎚️ ความไวของกล้อง',
-      html:`<div class="text-slate-500 text-sm">เลือกให้เหมาะกับระยะห่างจากกล้องของคุณ</div>`,
-      input:'radio',
-      inputOptions:{ low:'ต่ำ (ต้องเอียงตัวมาก)', medium:'กลาง (แนะนำ)', high:'สูง (ขยับตัวนิดเดียวก็เปลี่ยนเลน)' },
-      inputValue:'medium',
-      confirmButtonText:'ต่อไป ➡️', confirmButtonColor:'#B24BF3', allowOutsideClick:false,
-    });
-    camPreset = CAM_PRESETS[sens.value] || CAM_PRESETS.medium;
+    camPreset = CAM_PRESETS.high;
 
     Swal.fire({ title:'📷 กำลังขอสิทธิ์กล้อง...', allowOutsideClick:false, didOpen:()=>Swal.showLoading() });
     const ok = await startCamera();
